@@ -7,6 +7,15 @@ const openaiService = new OpenAIService();
 // Temporary in-memory store for uploaded files
 const uploadedFiles = {};
 
+// Create exports directory if it doesn't exist
+const ensureExportsDirectory = () => {
+  const exportsDir = path.join(__dirname, '../exports');
+  if (!fs.existsSync(exportsDir)) {
+    fs.mkdirSync(exportsDir, { recursive: true });
+  }
+  return exportsDir;
+};
+
 // Upload single PDF
 exports.uploadPDF = async (req, res) => {
   try {
@@ -96,7 +105,7 @@ exports.uploadMultiplePDFs = async (req, res) => {
 // Evaluate and compare multiple uploaded PDFs
 exports.evaluateAndComparePapers = async (req, res) => {
   try {
-    const { fileIds } = req.body;
+    const { fileIds, exportFormat } = req.body;
 
     if (!fileIds || !Array.isArray(fileIds) || fileIds.length === 0) {
       return res.status(400).json({ error: "Invalid file IDs", success: false });
@@ -111,18 +120,33 @@ exports.evaluateAndComparePapers = async (req, res) => {
       files.push(file);
     }
 
-    let comparisonResult;
+    let result;
+    
+    // Always use the individual evaluation approach
     if (files.length === 1) {
-      comparisonResult = await openaiService.evaluatePaper(files[0]);
+      result = await openaiService.evaluatePaper(files[0]);
     } else {
-      comparisonResult = await openaiService.comparePapers(files);
+      result = await openaiService.evaluateMultiplePapers(files);
     }
 
-    if (!comparisonResult.success) {
+    if (!result.success) {
       return res.status(500).json({
-        error: comparisonResult.error,
+        error: result.error,
         success: false
       });
+    }
+
+    // Generate CSV export if requested
+    let exportPath = null;
+    if (exportFormat === 'csv') {
+      ensureExportsDirectory();
+      
+      // Parse all findings from the evaluation text
+      const allFindings = openaiService.parseKeyFindings(result.evaluation);
+      
+      // Generate a CSV file with the findings
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      exportPath = openaiService.generateCSV(allFindings, `research_findings_${timestamp}`);
     }
 
     // Clean up all processed files
@@ -135,12 +159,31 @@ exports.evaluateAndComparePapers = async (req, res) => {
     }
 
     res.json({
-      evaluation: comparisonResult.evaluation,
+      evaluation: result.evaluation,
+      exportPath: exportPath ? path.basename(exportPath) : null,
       success: true
     });
 
   } catch (error) {
-    console.error("Error comparing papers:", error);
-    res.status(500).json({ error: "Comparison failed", success: false });
+    console.error("Error evaluating papers:", error);
+    res.status(500).json({ error: "Evaluation failed", success: false });
+  }
+};
+
+// New endpoint to download exported files
+exports.downloadExport = async (req, res) => {
+  try {
+    const { filename } = req.params;
+    const exportsDir = ensureExportsDirectory();
+    const filePath = path.join(exportsDir, filename);
+    
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: "Export file not found", success: false });
+    }
+    
+    res.download(filePath);
+  } catch (error) {
+    console.error("Error downloading export:", error);
+    res.status(500).json({ error: "Download failed", success: false });
   }
 };

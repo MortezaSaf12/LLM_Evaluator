@@ -12,4 +12,7 @@ router.post('/evaluate', pdfController.evaluatePaper);
 router.post('/upload-multiple', upload.array('pdfs', 5), pdfController.uploadMultiplePDFs);
 router.post('/evaluate-compare', pdfController.evaluateAndComparePapers);
 
+// export downloads
+router.get('/download/:filename', pdfController.downloadExport);
+
 module.exports = router;

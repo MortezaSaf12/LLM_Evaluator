@@ -140,7 +140,7 @@ evaluateButton.addEventListener('click', function() {
     // one file
     uploadSingleFile(selectedFiles[0]);
   } else {
-    // multiple files
+    // multiple files - we'll now use the same endpoint with a modified approach
     uploadMultipleFiles(selectedFiles);
   }
 });
@@ -205,7 +205,10 @@ function uploadMultipleFiles(files) {
       return fetch('/api/pdf/evaluate-compare', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileIds: data.fileIds })
+        body: JSON.stringify({ 
+          fileIds: data.fileIds,
+          exportFormat: 'csv' // Request CSV export
+        })
       });
     })
     .then(res => res.json())
@@ -213,9 +216,11 @@ function uploadMultipleFiles(files) {
       loadingSpinner.style.display = 'none';
       
       if (!evalResult.success) {
-        throw new Error(evalResult.error || 'Comparison failed');
+        throw new Error(evalResult.error || 'Evaluation failed');
       }
-      displayComparison(evalResult.evaluation);
+      
+      // Display the evaluation results
+      displayMultipleEvaluations(evalResult.evaluation, evalResult.exportPath);
     })
     .catch(err => {
       loadingSpinner.style.display = 'none';
@@ -234,9 +239,21 @@ function displayEvaluation(evaluation) {
   resultContainer.scrollIntoView({ behavior: 'smooth' });
 }
 
-function displayComparison(evaluation) {
+function displayMultipleEvaluations(evaluation, exportPath) {
+  let downloadLink = '';
+  
+  if (exportPath) {
+    downloadLink = `
+      <div class="export-section">
+        <p>A CSV file with structured findings has been created for easier analysis.</p>
+        <a href="/api/pdf/download/${exportPath}" class="download-button" download>Download CSV Export</a>
+      </div>
+    `;
+  }
+  
   resultContainer.innerHTML = `
-    <h2>Paper Comparison Results</h2>
+    <h2>Paper Evaluation Results</h2>
+    ${downloadLink}
     <div class="evaluation-content">
       ${formatEvaluation(evaluation)}
     </div>

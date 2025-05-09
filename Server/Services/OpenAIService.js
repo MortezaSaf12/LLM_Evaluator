@@ -105,73 +105,134 @@ ${fileContent}
     }
   }
 
-  // comparing multiple papers
-  async comparePapers(files) {
+  // Evaluate multiple papers individually and create a structured comparison
+  async evaluateMultiplePapers(files) {
     try {
-    
-      const paperContents = await Promise.all(files.map(async (file) => {
-        const content = await this.extractFileContent(file);
-        return {
-          filename: file.originalname,
-          content: content
-        };
+      // Process each file individually
+      const evaluations = await Promise.all(files.map(async (file) => {
+        const result = await this.evaluatePaper(file);
+        if (result.success) {
+          return {
+            filename: file.originalname,
+            evaluation: result.evaluation
+          };
+        }
+        return null;
       }));
+
+      // Filter out any failed evaluations
+      const validEvaluations = evaluations.filter(eval => eval !== null);
       
-      // Multiple paper comparison prompt
-      const comparisonPrompt = `
-You are an expert academic evaluator tasked with comparing key findings across multiple research papers. Based on the content provided below:
-
-1. Extract 3-5 key findings from each paper
-2. For each key finding, provide:
-   - Criteria: What this finding is about
-   - Value: The specific result or outcome discovered
-   - Evidence Level: (1-6) based on the guidelines with justification
-   - Source: Title of the paper
-   - Methodology Quality: Brief assessment of methods used
-   - Importance: Significance of this finding
-
-3. Then create a consolidated list of the most important findings across all papers, ranked by evidence quality (using the 1-6 scale from the guidelines)
-
-4. Provide a brief synthesis of how these findings relate to each other and what overall conclusions can be drawn
-
-## EVIDENCE QUALITY ASSESSMENT GUIDELINES
-${this.guidelines}
-
-## PAPERS:
-${paperContents.map((paper, index) => `
-PAPER ${index + 1}: ${paper.filename}
-${paper.content.substring(0, 8000)}... [content truncated for token limit]
-`).join('\n---\n')} 
-
-Present your findings in a clear, structured format without using tables. Number each key finding and organize them by paper first, then provide the consolidated ranking.
-`;
-
-      const response = await this.openai.chat.completions.create({
-        model: this.model,
-        messages: [
-          {
-            role: "system",
-            content: "You are an expert academic evaluator extracting and comparing key findings across multiple research papers according to evidence quality guidelines."
-          },
-          {
-            role: "user",
-            content: comparisonPrompt
-          }
-        ]
+      // Format the results with clear separation between papers
+      let formattedOutput = `# Research Paper Evaluation Results\n\n`;
+      
+      validEvaluations.forEach((evaluation, index) => {
+        formattedOutput += `## Paper ${index + 1}: ${evaluation.filename}\n\n`;
+        formattedOutput += `${evaluation.evaluation}\n\n`;
+        
+        if (index < validEvaluations.length - 1) {
+          formattedOutput += `---\n\n`;
+        }
       });
       
+      // Add a summary section if there are multiple papers
+      if (validEvaluations.length > 1) {
+        formattedOutput += `## Comparative Summary\n\n`;
+        formattedOutput += `The above evaluation presents individual assessments of ${validEvaluations.length} research papers. `;
+        formattedOutput += `Each paper has been evaluated based on the same evidence quality framework, extracting 3-5 key findings from each. `;
+        formattedOutput += `To compare papers, consider the evidence levels assigned to each key finding and the methodology quality assessments.\n\n`;
+        formattedOutput += `For a more detailed comparison, you may want to organize the findings by evidence level across papers or by similar research topics.\n`;
+      }
+      
       return {
-        evaluation: response.choices[0].message.content,
+        evaluation: formattedOutput,
         success: true
       };
-      
     } catch (error) {
-      console.error("OpenAI comparison error:", error);
+      console.error("Error evaluating multiple papers:", error);
       return {
         success: false,
-        error: error.message || "Error comparing papers with OpenAI"
+        error: error.message || "Error evaluating papers"
       };
     }
+  }
+
+  // Method to extract structured data from LLM output for exporting
+  parseKeyFindings(evaluation) {
+    const keyFindingRegex = /Key Finding #\d+\s*(?:-|\n)([\s\S]*?)(?=Key Finding #\d+|$)/g;
+    const criteriaRegex = /\*\*Criteria\*\*:\s*(.*?)(?=\n-|\n\n)/s;
+    const valueRegex = /\*\*Value\*\*:\s*(.*?)(?=\n-|\n\n)/s;
+    const evidenceLevelRegex = /\*\*Evidence Level\*\*:\s*(.*?)(?=\n-|\n\n)/s;
+    const sourceRegex = /\*\*Source\*\*:\s*(.*?)(?=\n-|\n\n)/s;
+    const methodologyRegex = /\*\*Methodology Quality\*\*:\s*(.*?)(?=\n-|\n\n)/s;
+    const importanceRegex = /\*\*Importance\*\*:\s*(.*?)(?=\n\n|\n$|$)/s;
+    
+    const findings = [];
+    let match;
+    
+    while ((match = keyFindingRegex.exec(evaluation)) !== null) {
+      const findingText = match[0];
+      
+      const criteria = criteriaRegex.exec(findingText)?.[1]?.trim() || '';
+      const value = valueRegex.exec(findingText)?.[1]?.trim() || '';
+      
+      // Extract just the numeric level from evidence level text
+      const fullEvidenceLevel = evidenceLevelRegex.exec(findingText)?.[1]?.trim() || '';
+      const levelMatch = fullEvidenceLevel.match(/\d+/);
+      const evidenceLevel = levelMatch ? levelMatch[0] : '';
+      const evidenceJustification = fullEvidenceLevel.replace(/^\d+\s*-\s*/, '');
+      
+      const source = sourceRegex.exec(findingText)?.[1]?.trim() || '';
+      const methodology = methodologyRegex.exec(findingText)?.[1]?.trim() || '';
+      const importance = importanceRegex.exec(findingText)?.[1]?.trim() || '';
+      
+      findings.push({
+        criteria,
+        value,
+        evidenceLevel,
+        evidenceJustification,
+        source,
+        methodology,
+        importance
+      });
+    }
+    
+    return findings;
+  }
+  
+  // Method to generate a CSV from parsed findings
+  generateCSV(findings, filename) {
+    const csvHeader = 'Source,Criteria,Value,Evidence Level,Evidence Justification,Methodology Quality,Importance\n';
+    const csvRows = findings.map(finding => {
+      return [
+        this.escapeCSV(finding.source),
+        this.escapeCSV(finding.criteria),
+        this.escapeCSV(finding.value),
+        this.escapeCSV(finding.evidenceLevel),
+        this.escapeCSV(finding.evidenceJustification),
+        this.escapeCSV(finding.methodology),
+        this.escapeCSV(finding.importance)
+      ].join(',');
+    });
+    
+    const csvContent = csvHeader + csvRows.join('\n');
+    const outputPath = path.join(__dirname, '../exports', `${filename}.csv`);
+    
+    // Ensure the exports directory exists
+    const exportDir = path.join(__dirname, '../exports');
+    if (!fs.existsSync(exportDir)) {
+      fs.mkdirSync(exportDir, { recursive: true });
+    }
+    
+    fs.writeFileSync(outputPath, csvContent);
+    return outputPath;
+  }
+  
+  // Helper to escape CSV fields
+  escapeCSV(field) {
+    if (!field) return '""';
+    // Escape quotes and wrap in quotes
+    return `"${field.replace(/"/g, '""')}"`;
   }
 }
 
